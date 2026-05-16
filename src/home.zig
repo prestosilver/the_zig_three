@@ -1,44 +1,50 @@
-const web = @import("web_library");
+const web = @import("the_zig_three");
 pub const main = web.mainFn(@This());
 
+const Index = @This();
+
+const client_script = web.Script(.client, Example);
+
 comptime {
-    // TODO : dont require this
-    _ = web.Generator.init("p", .runtime, example);
+    _ = client_script;
 }
 
-pub const example = struct {
-    pub fn onLoad(root: *web.Element) !void {
-        _ = root;
+const Example = struct {
+    text: []const u8,
+    //server: *web.Unit,
 
-        web.log("Hello from zig!");
-    }
+    pub fn onLoad(root: *web.Unit, self: Example) !void {
+        //const serverText = self.server.call("getHello", .{});
+        web.log("Test log", .{});
 
-    // TODO: get working
-    fn onClick() void {
-        web.log("user clicked!");
+        try root.addChildren(.{
+            web.Tag("p", .{self.text}),
+            // web.Tag("p", .{ "server says: ", serverText }),
+        });
     }
 };
 
-pub fn onLoad(root: *web.Element) !void {
-    try root.addChildren(&.{
-        .initTag("head", &.{
-            .initTag("title", &.{.initText("Prestosilver test page")}),
+const Server = struct {
+    pub fn getHello(_: *web.Unit, _: Server) []const u8 {
+        return "Hello World!";
+    }
+
+    // onload should not be required
+};
+
+pub fn onLoad(root: *web.Unit, _: Index) !void {
+    // Since servers are a unit, you can @import it and keep the code seperate.
+    // const server = web.Script(.server, Server)(.{});
+
+    try root.addChildren(.{
+        web.Tag("h1", .{"Example of the new api"}),
+        client_script(.{
+            .text = "Example Template",
+            //.server = server,
         }),
-        .initTag("body", &.{
-            .initTag("h1", &.{.initText("This is a test page.")}),
-            .initTag("a", &.{
-                .initAttribute("href", "http://prestosilver.info"),
-                .initText("Link"),
-            }),
-            .initGen("p", .runtime, example),
-            .initGen("p", .generated, struct {
-                pub fn onLoad(element_root: *web.Element) !void {
-                    try element_root.addChildren(&.{
-                        .initText("How are you today"),
-                    });
-                }
-            }),
-            .initTag("p", &.{.initText("Ok tkx bye")}),
-        }),
+        // server,
+
+        // templates if it wasnt obvious from the previous post, can be made with @import
+        web.Script(.generated, @import("footer.zig"))(.{}),
     });
 }

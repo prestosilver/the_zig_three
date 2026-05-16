@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
 
             .imports = &.{
-                .{ .name = "web_library", .module = web_library_mod },
+                .{ .name = "the_zig_three", .module = web_library_mod },
             },
         }),
     });
@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
             .os_tag = .freestanding,
         }),
         .imports = &.{
-            .{ .name = "web_library", .module = web_library_mod },
+            .{ .name = "the_zig_three", .module = web_library_mod },
         },
         .optimize = optimize,
     });
