@@ -34,8 +34,11 @@ pub fn build(b: *std.Build) void {
 
     const generate_cmd = b.addRunArtifact(exe);
     generate_cmd.step.dependOn(b.getInstallStep());
-    const generated_file = generate_cmd.addOutputFileArg("index.html");
-    const generated_artifact = b.addInstallFile(generated_file, "index.html");
+    const generated_html_file = generate_cmd.addOutputFileArg("index.html");
+    const generated_css_file = generate_cmd.addOutputFileArg("index.css");
+
+    const generated_html_artifact = b.addInstallFile(generated_html_file, "index.html");
+    const generated_css_artifact = b.addInstallFile(generated_css_file, "index.css");
 
     const web_mod = b.addModule("page", .{
         .root_source_file = b.path("src/home.zig"),
@@ -64,5 +67,6 @@ pub fn build(b: *std.Build) void {
     const generate_step = b.step("generate", "Generate the website");
 
     generate_step.dependOn(&wasm_artifact.step);
-    generate_step.dependOn(&generated_artifact.step);
+    generate_step.dependOn(&generated_html_artifact.step);
+    generate_step.dependOn(&generated_css_artifact.step);
 }

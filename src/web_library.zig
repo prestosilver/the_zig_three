@@ -24,6 +24,118 @@ pub fn log(comptime fmt: []const u8, args: anytype) void {
     }
 }
 
+pub const Attribute = struct {
+    key: []const u8,
+    value: []const u8,
+
+    pub fn format(self: @This(), writer: *std.io.Writer) !void {
+        try writer.print("{s}=\"{s}\"", .{ self.key, self.value });
+    }
+};
+
+pub const Style = struct {
+    tag: ?[]const u8 = null,
+    attributes: ?[]const Attribute = null,
+    bold: ?bool = null,
+    class: ?[]const u8 = null,
+
+    parent: ?*const Style = null,
+
+    pub const html = Style{ .tag = "html" };
+
+    fn GetType(comptime field: []const u8) type {
+        return if (std.mem.eql(u8, field, "tag"))
+            []const u8
+        else if (std.mem.eql(u8, field, "class"))
+            []const u8
+        else if (std.mem.eql(u8, field, "attributes"))
+            []const Attribute
+        else if (std.mem.eql(u8, field, "bold"))
+            bool
+        else
+            @compileError("Invalid style property \"" ++ field ++ "\"");
+    }
+
+    pub fn get(self: *const Style, comptime field: []const u8) ?GetType(field) {
+        return @field(self, field) orelse
+            if (self.parent) |parent| parent.get(field) else null;
+    }
+
+    fn base(self: Style) bool {
+        const info = @typeInfo(Style);
+        inline for (info.@"struct".fields) |field| {
+            if (comptime std.mem.eql(u8, field.name, "tag") or
+                std.mem.eql(u8, field.name, "class") or
+                std.mem.eql(u8, field.name, "attributes"))
+                continue;
+
+            if (@field(self, field.name)) |f|
+                if (comptime std.mem.eql(u8, field.name, "parent")) {
+                    if (!f.base()) return false;
+                } else return false;
+        }
+
+        return true;
+    }
+
+    pub fn u(self: *const Style, children: anytype) Unit {
+        var result: Unit = .{
+            .data = .{
+                .group = .{
+                    .style = self,
+                },
+            },
+        };
+
+        result.add(children) catch unreachable;
+
+        return result;
+    }
+
+    pub fn text(self: *const Style, txt: []const u8) Unit {
+        var result: Unit = .{
+            .data = .{
+                .group = .{
+                    .style = self,
+                },
+            },
+        };
+
+        result.add(.{txt}) catch unreachable;
+
+        return result;
+    }
+
+    pub fn format_class(self: Style, writer: *std.io.Writer) std.io.Writer.Error!void {
+        if (self.parent) |parent| {
+            try parent.format_class(writer);
+            if (self.class) |class| {
+                try writer.print(" {s}", .{class});
+            }
+        }
+    }
+
+    pub fn format_name(self: Style, writer: *std.io.Writer) std.io.Writer.Error!void {
+        if (self.parent) |parent| {
+            try parent.format_name(writer);
+            if (self.class) |class| {
+                try writer.print(".{s}", .{class});
+            }
+        } else {
+            try writer.print("{s}", .{self.tag.?});
+        }
+    }
+
+    pub fn format(self: Style, writer: *std.io.Writer) std.io.Writer.Error!void {
+        if (self.base()) return;
+
+        try self.format_name(writer);
+        try writer.print(" {{\n", .{});
+        if (self.bold) |bold| try writer.print("    font-weight: {s};\n", .{if (bold) "bold" else "normal"});
+        try writer.print("}}\n", .{});
+    }
+};
+
 const Generator = struct {
     base: *const anyopaque,
     generate: *const fn (*Unit, base: *const anyopaque) anyerror!void,
@@ -57,14 +169,15 @@ pub fn Script(comptime kind: ScriptKind, comptime Base: type) fn (comptime base:
                             }
 
                             pub fn onLoad(root: *Unit, _: *const anyopaque) !void {
-                                try root.addChildren(.{
-                                    Tag("script", .{
+                                try root.add(.{
+                                    (Style{ .tag = "script" }).u(.{
                                         \\WebAssembly.instantiateStreaming(fetch("page.wasm"), {env: {
                                         ,
                                         @embedFile("env.js"),
                                         \\}}).then(
                                         \\   (results) => {
                                         \\       instance = results.instance;
+                                        \\       results.instance.exports["_start"]();
                                         \\       results.instance.exports["
                                         ++ @typeName(Base) ++
                                             \\"]();},);
@@ -93,18 +206,11 @@ pub fn Script(comptime kind: ScriptKind, comptime Base: type) fn (comptime base:
 
 pub const Unit = struct {
     const Data = union(Kind) {
-        const Kind = enum { group, tag, attribute, text, generator };
+        const Kind = enum { group, text, generator };
 
         group: struct {
+            style: ?*const Style = null,
             children: std.ArrayList(Unit) = .{},
-        },
-        tag: struct {
-            kind: []const u8,
-            children: std.ArrayList(Unit) = .{},
-        },
-        attribute: struct {
-            key: []const u8,
-            value: []const u8,
         },
         text: []const u8,
         generator: Generator,
@@ -115,11 +221,6 @@ pub const Unit = struct {
                     for (g.children.items) |child|
                         child.deinit();
                 },
-                .tag => |t| {
-                    for (t.children.items) |child|
-                        child.deinit();
-                },
-                .attribute => {},
                 .text => {},
                 .generator => |gen| {
                     _ = gen;
@@ -139,13 +240,6 @@ pub const Unit = struct {
         };
     }
 
-    pub fn attribute(key: []const u8, value: []const u8) Data {
-        return .{ .attribute = .{
-            .key = key,
-            .value = value,
-        } };
-    }
-
     pub fn init(new_data: Data) !Unit {
         return .{
             .data = new_data,
@@ -156,14 +250,13 @@ pub const Unit = struct {
         self.data.deinit();
     }
 
-    pub fn addChild(self: *Unit, child: anytype) !void {
+    pub fn add(self: *Unit, child: anytype) !void {
         if (!is_runtime) {
             const T = @TypeOf(child);
             const t_info = @typeInfo(T);
 
             const children: *std.ArrayList(Unit) = switch (self.data) {
                 .group => |*g| &g.children,
-                .tag => |*t| &t.children,
                 else => |o| {
                     std.log.err("Unit type {s} cannot have chilren", .{@tagName(o)});
 
@@ -187,51 +280,73 @@ pub const Unit = struct {
                         try children.append(allocator, .{ .data = .{ .text = child } });
                     } else @compileError(std.fmt.comptimePrint("{any}", .{p}));
                 },
+                .@"struct" => |s| {
+                    if (s.is_tuple) {
+                        inline for (child) |new_child|
+                            try self.add(new_child);
+                    }
+                },
                 else => @compileError(@typeName(T) ++ ": " ++ @tagName(t_info)),
             }
-        }
+        } else {}
     }
 
-    pub fn addChildren(self: *Unit, children: anytype) anyerror!void {
-        inline for (children) |new_child|
-            try self.addChild(new_child);
+    pub fn getStyles(self: Unit) []*const Style {
+        switch (self.data) {
+            .group => |g| {
+                var result: std.ArrayList(*const Style) = .{};
+                defer result.deinit(allocator);
+
+                if (g.style) |s|
+                    result.append(allocator, s) catch unreachable;
+
+                for (g.children.items) |child| {
+                    const styles = child.getStyles();
+                    defer allocator.free(styles);
+
+                    result.appendSlice(allocator, styles) catch unreachable;
+                }
+
+                return result.toOwnedSlice(allocator) catch unreachable;
+            },
+            .text => return &.{},
+            .generator => |gen| {
+                var tmp = try Unit.init(.{
+                    .group = .{},
+                });
+                defer tmp.deinit();
+
+                gen.generate(&tmp, gen.base) catch unreachable;
+                return tmp.getStyles();
+            },
+        }
     }
 
     // Basic zig format function, outputs in html.
     pub fn format(self: @This(), writer: *std.io.Writer) !void {
         switch (self.data) {
             .group => |g| {
+                if (g.style) |style| {
+                    try writer.print("<{s}", .{style.get("tag") orelse "p"});
+                    if (style.get("attributes")) |attrs| {
+                        for (attrs) |attr|
+                            try writer.print(" {f}", .{attr});
+                    }
+
+                    try writer.print(" class=\"", .{});
+                    try style.format_class(writer);
+
+                    try writer.print("\">", .{});
+                }
+
                 for (g.children.items) |child|
                     try writer.print("{f}", .{child});
-            },
-            .tag => |t| {
-                var body: std.io.Writer.Allocating = .init(allocator);
-                defer body.deinit();
-                var attrs: std.io.Writer.Allocating = .init(allocator);
-                defer attrs.deinit();
 
-                for (t.children.items) |child| {
-                    if (child.data == .attribute)
-                        try attrs.writer.print(" {f}", .{child})
-                    else
-                        try body.writer.print("{f}", .{child});
-                }
-
-                const body_slice = body.toOwnedSlice() catch return error.WriteFailed;
-                defer allocator.free(body_slice);
-                const attrs_slice = attrs.toOwnedSlice() catch return error.WriteFailed;
-                defer allocator.free(attrs_slice);
-
-                if (body_slice.len == 0) {
-                    try writer.print("<{s}{s}/>", .{ t.kind, attrs_slice });
-                } else {
-                    try writer.print("<{s}{s}>\n{s}</{s}>\n", .{ t.kind, attrs_slice, body_slice, t.kind });
+                if (g.style) |style| {
+                    try writer.print("</{s}>", .{style.get("tag") orelse "p"});
                 }
             },
-            .attribute => |attr| {
-                try writer.print("{s}=\"{s}\"", .{ attr.key, attr.value });
-            },
-            .text => |t| try writer.print("{s}\n", .{t}),
+            .text => |t| try writer.print("{s}", .{t}),
             .generator => |gen| {
                 var tmp = try Unit.init(.{
                     .group = .{},
@@ -246,29 +361,14 @@ pub const Unit = struct {
     }
 };
 
-pub fn Tag(kind: []const u8, children: anytype) Unit {
-    var result: Unit = .{
-        .data = .{
-            .tag = .{
-                .kind = kind,
-                .children = .{},
-            },
-        },
-    };
-
-    result.addChildren(children) catch unreachable;
-
-    return result;
-}
-
 pub const Document = struct {
     root: Unit,
 
     // NOTE: This adds a single html element
     pub fn init() !Document {
         const root = try Unit.init(.{
-            .tag = .{
-                .kind = "html",
+            .group = .{
+                .style = &.html,
                 .children = try .initCapacity(allocator, 0),
             },
         });
@@ -286,17 +386,16 @@ pub const Document = struct {
     pub fn format(self: @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
         try writer.print("{f}", .{self.root});
     }
+
+    pub fn getStyles(self: Document) []*const Style {
+        return self.root.getStyles();
+    }
 };
 
 pub fn mainFn(Root: type) fn () anyerror!void {
-    return struct {
+    const result = struct {
         pub fn exported() callconv(.c) void {
             _ = Root.onLoad(undefined, undefined) catch unreachable;
-        }
-
-        comptime {
-            if (is_runtime)
-                @export(&exported, .{ .name = "stub" });
         }
 
         pub fn main() !void {
@@ -309,7 +408,8 @@ pub fn mainFn(Root: type) fn () anyerror!void {
 
                     struct {
                         positional: struct {
-                            output_path: []const u8,
+                            html_output_path: []const u8,
+                            css_output_path: []const u8,
                         },
                     },
 
@@ -321,14 +421,37 @@ pub fn mainFn(Root: type) fn () anyerror!void {
 
                 const params = Root{};
 
+                try document.root.add((Style{ .tag = "head" }).u(.{
+                    (Style{
+                        .tag = "link",
+                        .attributes = &.{
+                            .{ .key = "rel", .value = "stylesheet" },
+                            .{ .key = "href", .value = "/index.css" },
+                        },
+                    }).u(.{}),
+                }));
+
                 try Root.onLoad(&document.root, params);
 
-                var file: std.fs.File = try std.fs.createFileAbsolute(cli.positional.output_path, .{});
-                defer file.close();
+                var html_file: std.fs.File = try std.fs.createFileAbsolute(cli.positional.html_output_path, .{});
+                defer html_file.close();
 
-                var writer = file.writer(&.{});
-                try writer.interface.print("{f}", .{document});
+                var html_writer = html_file.writer(&.{});
+                try html_writer.interface.print("{f}", .{document});
+
+                var css_file: std.fs.File = try std.fs.createFileAbsolute(cli.positional.css_output_path, .{});
+                defer css_file.close();
+
+                var css_writer = css_file.writer(&.{});
+
+                for (document.getStyles()) |style|
+                    try css_writer.interface.print("{f}", .{style});
             }
         }
-    }.main;
+    };
+
+    if (is_runtime)
+        @export(&result.exported, .{ .name = "stub", .linkage = .link_once });
+
+    return result.main;
 }

@@ -3,48 +3,37 @@ pub const main = web.mainFn(@This());
 
 const Index = @This();
 
-const client_script = web.Script(.client, Example);
+const div: web.Style = .{ .tag = "div" };
+const p: web.Style = .{ .tag = "p" };
+const p_bold: web.Style = .{ .parent = &p, .bold = true, .class = "bold" };
+const p_example: web.Style = .{ .parent = &p_bold, .bold = false, .class = "not_bold" };
 
-comptime {
-    _ = client_script;
-}
-
-const Example = struct {
+const ClientCode = struct {
     text: []const u8,
-    //server: *web.Unit,
 
-    pub fn onLoad(root: *web.Unit, self: Example) !void {
-        //const serverText = self.server.call("getHello", .{});
-        web.log("Test log", .{});
+    pub fn onLoad(root: *web.Unit, self: ClientCode) !void {
+        web.log("Test log {s}", .{self.text});
 
-        try root.addChildren(.{
-            web.Tag("p", .{self.text}),
-            // web.Tag("p", .{ "server says: ", serverText }),
+        try root.add(.{
+            p.u(.{self.text}),
         });
     }
 };
 
-const Server = struct {
-    pub fn getHello(_: *web.Unit, _: Server) []const u8 {
-        return "Hello World!";
-    }
-
-    // onload should not be required
-};
-
 pub fn onLoad(root: *web.Unit, _: Index) !void {
-    // Since servers are a unit, you can @import it and keep the code seperate.
-    // const server = web.Script(.server, Server)(.{});
+    try root.add(.{
+        div.u(.{
+            "example of the new api",
+            p_bold.u("this text is bold"),
+            p_example.u("this text is not bold"),
+        }),
+        "Raw text outside a tag",
 
-    try root.addChildren(.{
-        web.Tag("h1", .{"Example of the new api"}),
-        client_script(.{
+        web.Script(.client, ClientCode)(.{
             .text = "Example Template",
             //.server = server,
         }),
-        // server,
 
-        // templates if it wasnt obvious from the previous post, can be made with @import
         web.Script(.generated, @import("footer.zig"))(.{}),
     });
 }
