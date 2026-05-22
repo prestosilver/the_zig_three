@@ -3,9 +3,9 @@
 
     .version = "0.0.0",
 
-    .fingerprint = 0xa45eec9718afadea,
+    .fingerprint = 0xabfcb8a39f24500c,
     .minimum_zig_version = "0.15.2",
-    
+
     .dependencies = .{
         .flags = .{
             .url = "git+https://github.com/joegm/flags#2d62be30ff33661a2a3c6743ac922a78302d78a0",
