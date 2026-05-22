@@ -2,25 +2,103 @@ const std = @import("std");
 const flags = @import("flags");
 const builtin = @import("builtin");
 
-const is_runtime = builtin.target.cpu.arch == .wasm32;
+var generation: bool = true;
+const client_pass = builtin.target.cpu.arch == .wasm32;
+
+fn gen_pass() enum {
+    generation,
+    script,
+    server,
+} {
+    return if (generation == true)
+        .generation
+    else
+        .script;
+}
 
 var gpa = std.heap.DebugAllocator(.{}){};
 const allocator = gpa.allocator();
 
-extern fn get_unit(ptr: [*]const u8, len: usize) *Unit;
+var js_body: std.ArrayList(u8) = .{};
+var idx: usize = 0;
 
-pub fn getBrowser() []const u8 {
-    return "Chrome";
+pub fn jsValue(comptime name: []const u8, comptime gen: anytype, comptime code: []const u8) gen {
+    idx += 1;
+
+    if (comptime client_pass)
+        return @extern(gen, .{ .name = name });
+
+    switch (gen_pass()) {
+        .script => {
+            const gen_code = std.fmt.allocPrint(allocator, "{s}: {s},", .{ name, code }) catch unreachable;
+            defer allocator.free(gen_code);
+
+            js_body.appendSlice(allocator, gen_code) catch unreachable;
+
+            return undefined;
+        },
+        .server, .generation => {
+            return undefined;
+        },
+    }
 }
 
-extern fn console_log(ptr: [*]const u8, len: usize) void;
-pub fn log(comptime fmt: []const u8, args: anytype) void {
-    if (is_runtime) {
-        var buf: [1024]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, fmt, args) catch unreachable;
-        console_log(msg.ptr, msg.len);
+export fn allocate(len: usize) callconv(.c) [*]const u8 {
+    return (allocator.alloc(u8, len) catch unreachable).ptr;
+}
+
+pub fn getBrowser() []const u8 {
+    const useragent_fn = jsValue(
+        "getBrowser",
+        *const fn () callconv(.c) [*:0]const u8,
+        \\() => {
+        \\    const myString = navigator.userAgent;
+        \\    const encoder = new TextEncoder();
+        \\    const bytes = encoder.encode(myString);
+        \\    
+        \\    // Assume Wasm module exports an 'allocate' function
+        \\    const ptr = wasm_instance.exports.allocate(bytes.length);
+        \\    const view = new Uint8Array(wasm_instance.exports.memory.buffer, ptr, bytes.length);
+        \\    view.set(bytes);
+        \\
+        \\    return ptr;
+        \\}
+        ,
+    );
+
+    if (comptime client_pass) {
+        return std.mem.span(useragent_fn());
     } else {
-        std.log.info(fmt, args);
+        switch (gen_pass()) {
+            .script => return "",
+            else => |p| std.debug.panic("Cannot call get browser in {s} pass.", .{@tagName(p)}),
+        }
+    }
+}
+
+pub fn log(comptime fmt: []const u8, args: anytype) void {
+    const log_fn = jsValue(
+        "logFunction",
+        *const fn (ptr: [*c]const u8, len: usize) callconv(.c) void,
+        \\(ptr,len) => {
+        \\    const memory = new Uint8Array(wasm_instance.exports.memory.buffer);
+        \\    const msg = new TextDecoder().decode(memory.subarray(ptr, ptr + len));
+        \\    console.log(msg);
+        \\}
+        ,
+    );
+
+    if (comptime client_pass) {
+        const msg = std.fmt.allocPrint(allocator, fmt, args) catch unreachable;
+        defer allocator.free(msg);
+
+        return log_fn(msg.ptr, msg.len);
+    } else {
+        switch (gen_pass()) {
+            .server, .generation => std.log.info(fmt, args),
+            .script => {},
+            //else => |p| std.debug.panic("Cannot call log in {s} pass.", .{@tagName(p)}),
+        }
     }
 }
 
@@ -158,29 +236,33 @@ pub fn Script(comptime kind: ScriptKind, comptime Base: type) fn (comptime base:
                         .name = generator_name,
                         .generate = struct {
                             pub fn exported() callconv(.c) void {
-                                const elem = get_unit(generator_name.ptr, generator_name.len);
-                                Base.onLoad(elem, base) catch unreachable;
+                                //const elem = get_unit(generator_name.ptr, generator_name.len);
+                                Base.onLoad(undefined, base) catch unreachable;
                             }
 
                             comptime {
-                                if (is_runtime) {
+                                if (client_pass) {
                                     @export(&exported, .{ .name = generator_name });
                                 }
                             }
 
-                            pub fn onLoad(root: *Unit, _: *const anyopaque) !void {
+                            pub fn onLoad(root: *Unit, base_ptr: *const anyopaque) !void {
+                                const b: *const Base = @ptrCast(@alignCast(base_ptr));
+                                generation = false;
+                                _ = try Base.onLoad(root, b.*);
+                                generation = true;
+
                                 try root.add(.{
-                                    (Style{ .tag = "script" }).u(.{
-                                        \\WebAssembly.instantiateStreaming(fetch("page.wasm"), {env: {
-                                        ,
-                                        @embedFile("env.js"),
-                                        \\}}).then(
-                                        \\   (results) => {
-                                        \\       instance = results.instance;
-                                        \\       results.instance.exports["_start"]();
-                                        \\       results.instance.exports["
+                                    (Style{
+                                        .tag = "script",
+                                        .attributes = &.{
+                                            .{ .key = "type", .value = "module" },
+                                        },
+                                    }).u(.{
+                                        \\import {wasm_instance} from '/index.js';
+                                        \\wasm_instance.exports["
                                         ++ @typeName(Base) ++
-                                            \\"]();},);
+                                            \\"]();
                                     }),
                                 });
                             }
@@ -193,7 +275,7 @@ pub fn Script(comptime kind: ScriptKind, comptime Base: type) fn (comptime base:
                         .name = generator_name,
                         .generate = &struct {
                             pub fn onLoad(root: *Unit, base_ptr: *const anyopaque) !void {
-                                const b: *const Base = @ptrCast(base_ptr);
+                                const b: *const Base = @ptrCast(@alignCast(base_ptr));
                                 return Base.onLoad(root, b.*);
                             }
                         }.onLoad,
@@ -251,7 +333,7 @@ pub const Unit = struct {
     }
 
     pub fn add(self: *Unit, child: anytype) !void {
-        if (!is_runtime) {
+        if (!client_pass) {
             const T = @TypeOf(child);
             const t_info = @typeInfo(T);
 
@@ -399,7 +481,7 @@ pub fn mainFn(Root: type) fn () anyerror!void {
         }
 
         pub fn main() !void {
-            if (!is_runtime) {
+            if (!client_pass) {
                 const args = try std.process.argsAlloc(allocator);
 
                 const cli = flags.parse(
@@ -410,6 +492,7 @@ pub fn mainFn(Root: type) fn () anyerror!void {
                         positional: struct {
                             html_output_path: []const u8,
                             css_output_path: []const u8,
+                            js_output_path: []const u8,
                         },
                     },
 
@@ -439,6 +522,26 @@ pub fn mainFn(Root: type) fn () anyerror!void {
                 var html_writer = html_file.writer(&.{});
                 try html_writer.interface.print("{f}", .{document});
 
+                var js_file: std.fs.File = try std.fs.createFileAbsolute(cli.positional.js_output_path, .{});
+                defer js_file.close();
+
+                var js_writer = js_file.writer(&.{});
+
+                try js_writer.interface.writeAll(
+                    \\export const wasm_instance = await new Promise((resolve) => {
+                    \\  WebAssembly.instantiateStreaming(fetch("page.wasm"), {env: {
+                    ,
+                );
+                try js_writer.interface.writeAll(js_body.items);
+
+                try js_writer.interface.writeAll(
+                    \\  }}).then((result) => {
+                    \\    result.instance.exports["_start"]();
+                    \\    resolve(result.instance);
+                    \\  });
+                    \\});
+                );
+
                 var css_file: std.fs.File = try std.fs.createFileAbsolute(cli.positional.css_output_path, .{});
                 defer css_file.close();
 
@@ -450,7 +553,7 @@ pub fn mainFn(Root: type) fn () anyerror!void {
         }
     };
 
-    if (is_runtime)
+    if (client_pass)
         @export(&result.exported, .{ .name = "stub", .linkage = .link_once });
 
     return result.main;

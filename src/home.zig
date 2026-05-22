@@ -14,6 +14,9 @@ const ClientCode = struct {
     pub fn onLoad(root: *web.Unit, self: ClientCode) !void {
         web.log("Test log {s}", .{self.text});
 
+        const browser = web.getBrowser();
+        web.log("Hello '{s} user", .{browser});
+
         try root.add(.{
             p.u(.{self.text}),
         });
