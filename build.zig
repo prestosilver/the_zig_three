@@ -11,7 +11,7 @@ pub fn build(b: *std.Build) void {
 
     const flags_mod = flags_dep.module("flags");
 
-    const web_library_mod = b.addModule("web", .{
+    const web_library_mod = b.addModule("the_zig_three", .{
         .root_source_file = b.path("src/web_library.zig"),
         .target = target,
         .imports = &.{
@@ -42,7 +42,7 @@ pub fn build(b: *std.Build) void {
     const generated_css_artifact = b.addInstallFile(generated_css_file, "index.css");
     const generated_js_artifact = b.addInstallFile(generated_js_file, "index.js");
 
-    const web_library_mod_wasm = b.addModule("web", .{
+    const web_library_mod_wasm = b.addModule("the_zig_three_wasm", .{
         .root_source_file = b.path("src/web_library.zig"),
         .target = b.resolveTargetQuery(.{
             .cpu_arch = .wasm32,
