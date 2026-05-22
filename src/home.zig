@@ -11,7 +11,7 @@ const p_example: web.Style = .{ .parent = &p_bold, .bold = false, .class = "not_
 const ClientCode = struct {
     text: []const u8,
 
-    pub fn onLoad(root: *web.Unit, self: ClientCode) !void {
+    pub fn entry(root: *web.Unit, self: ClientCode) !void {
         web.log("Test log {s}", .{self.text});
 
         const browser = web.getBrowser();
@@ -23,7 +23,7 @@ const ClientCode = struct {
     }
 };
 
-pub fn onLoad(root: *web.Unit, _: Index) !void {
+pub fn entry(root: *web.Unit, _: Index) !void {
     try root.add(.{
         div.u(.{
             "example of the new api",

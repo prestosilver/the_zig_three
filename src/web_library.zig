@@ -237,7 +237,7 @@ pub fn Script(comptime kind: ScriptKind, comptime Base: type) fn (comptime base:
                         .generate = struct {
                             pub fn exported() callconv(.c) void {
                                 //const elem = get_unit(generator_name.ptr, generator_name.len);
-                                Base.onLoad(undefined, base) catch unreachable;
+                                Base.entry(undefined, base) catch unreachable;
                             }
 
                             comptime {
@@ -246,10 +246,10 @@ pub fn Script(comptime kind: ScriptKind, comptime Base: type) fn (comptime base:
                                 }
                             }
 
-                            pub fn onLoad(root: *Unit, base_ptr: *const anyopaque) !void {
+                            pub fn entry(root: *Unit, base_ptr: *const anyopaque) !void {
                                 const b: *const Base = @ptrCast(@alignCast(base_ptr));
                                 generation = false;
-                                _ = try Base.onLoad(root, b.*);
+                                _ = try Base.entry(root, b.*);
                                 generation = true;
 
                                 try root.add(.{
@@ -266,7 +266,7 @@ pub fn Script(comptime kind: ScriptKind, comptime Base: type) fn (comptime base:
                                     }),
                                 });
                             }
-                        }.onLoad,
+                        }.entry,
                     };
                 },
                 .generated => {
@@ -274,11 +274,11 @@ pub fn Script(comptime kind: ScriptKind, comptime Base: type) fn (comptime base:
                         .base = @ptrCast(&base),
                         .name = generator_name,
                         .generate = &struct {
-                            pub fn onLoad(root: *Unit, base_ptr: *const anyopaque) !void {
+                            pub fn entry(root: *Unit, base_ptr: *const anyopaque) !void {
                                 const b: *const Base = @ptrCast(@alignCast(base_ptr));
-                                return Base.onLoad(root, b.*);
+                                return Base.entry(root, b.*);
                             }
-                        }.onLoad,
+                        }.entry,
                     };
                 },
             }
@@ -477,7 +477,7 @@ pub const Document = struct {
 pub fn mainFn(Root: type) fn () anyerror!void {
     const result = struct {
         pub fn exported() callconv(.c) void {
-            _ = Root.onLoad(undefined, undefined) catch unreachable;
+            _ = Root.entry(undefined, undefined) catch unreachable;
         }
 
         pub fn main() !void {
@@ -514,7 +514,7 @@ pub fn mainFn(Root: type) fn () anyerror!void {
                     }).u(.{}),
                 }));
 
-                try Root.onLoad(&document.root, params);
+                try Root.entry(&document.root, params);
 
                 var html_file: std.fs.File = try std.fs.createFileAbsolute(cli.positional.html_output_path, .{});
                 defer html_file.close();
